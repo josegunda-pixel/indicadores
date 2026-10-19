@@ -164,6 +164,21 @@ th:first-child,td:first-child{text-align:left}
 .meter{position:relative;width:110px;height:6px;border-radius:3px;background:linear-gradient(90deg,var(--down),var(--line) 50%,var(--up))}
 .meter i{position:absolute;top:-3px;width:4px;height:12px;background:#fff;border-radius:2px}
 tr[data-pair]{cursor:pointer}tr[data-pair]:hover{background:var(--panel2)}
+
+/* panel de señales por periodo */
+.rcol{grid-area:order;display:flex;flex-direction:column;gap:8px;min-width:0}
+.mtfh{display:flex;justify-content:space-between;align-items:center;padding:10px 12px 6px}
+.mtfbody{padding:0 12px 12px;display:flex;flex-direction:column;gap:8px}
+.mtfchips{display:flex;flex-wrap:wrap;gap:4px}
+.mtfchips button{border:1px solid var(--line);background:transparent;color:var(--muted);border-radius:999px;padding:2px 9px;cursor:pointer;font-size:12px}
+.mtfchips button[aria-pressed="true"]{border-color:var(--accent2);color:var(--ink);background:var(--panel2)}
+.mtfsum{font-size:12px;color:var(--muted)}
+.mrow{display:grid;grid-template-columns:38px 1fr;gap:3px 8px;align-items:center;padding:7px 8px;border:1px solid var(--line);border-radius:8px;cursor:pointer;background:var(--panel2)}
+.mrow:hover{border-color:var(--accent2)}
+.mrow .tf{grid-row:1/4;font-weight:700;font-size:14px}
+.mrow .l1{display:flex;justify-content:space-between;align-items:center;gap:6px;font-size:12px}
+.mrow .pb{height:6px;border-radius:3px;background:var(--down);overflow:hidden}
+.mrow .pb i{display:block;height:100%;background:var(--up)}
 </style>
 </head>
 <body>
@@ -219,6 +234,16 @@ tr[data-pair]{cursor:pointer}tr[data-pair]:hover{background:var(--panel2)}
     <div style="height:8px"></div>
   </aside>
 
+  <div class="rcol">
+  <section class="panel mtf" id="mtf" aria-label="Señales por periodo">
+    <div class="mtfh"><h3>Comprar / Vender por periodo · <span id="mtfPair"></span></h3><button class="mini" id="mtfTog" type="button" aria-expanded="true" title="Plegar o desplegar">−</button></div>
+    <div class="mtfbody" id="mtfBody">
+      <div class="mtfchips" id="mtfChips" role="group" aria-label="Periodos a vigilar"></div>
+      <div class="mtfsum" id="mtfSum"></div>
+      <div id="mtfRows"></div>
+      <p class="hint" id="mtfHint"></p>
+    </div>
+  </section>
   <aside class="panel order" aria-label="Operar">
     <div class="seg" id="typeSeg" role="group" aria-label="Tipo de orden">
       <button type="button" data-type="market" aria-pressed="true">Mercado</button>
@@ -263,6 +288,7 @@ tr[data-pair]{cursor:pointer}tr[data-pair]:hover{background:var(--panel2)}
     </div>
     <p class="hint">Long gana si el precio sube. Short gana si baja. Si el precio llega al precio de liquidación, pierdes el margen de esa posición.</p>
   </aside>
+  </div>
 
   <section class="panel tabs" aria-label="Tu cuenta">
     <div class="tabbar" id="tabbar" role="tablist">
@@ -643,7 +669,7 @@ function selectPair(x){
   view.count=100; view.off=0;
   buildLevQuick(); setLev(form.lev);
   if(form.type==='limit'&&last[x])$('#price').value=inputNum(last[x],sel.dec);
-  setErr(''); save(); loadPair(); closeMenu();
+  setErr(''); save(); loadPair(); closeMenu(); mtf={}; mtfRun();
 }
 function buildTfs(){
   $('#tfs').innerHTML=IVS.map(function(v){return '<button type="button" data-iv="'+v[0]+'" aria-pressed="'+(v[0]===iv)+'">'+v[1]+'</button>';}).join('');
@@ -1202,6 +1228,75 @@ $('#reset').addEventListener('click',function(){
   }
 });
 
+
+/* ================= señales por periodo (panel arriba a la derecha) ================= */
+var MH=5, mtf={}, mtfTok=0, MW=(function(){
+  try{var a=JSON.parse(localStorage.getItem('futuros-sim-mtf')||'null');
+    if(Array.isArray(a))return a.filter(function(k){return IVS.some(function(v){return v[0]===k;});});}catch(e){}
+  return ['1m','5m','15m','1h','4h','1d'];
+})();
+function mtfSave(){try{localStorage.setItem('futuros-sim-mtf',JSON.stringify(MW));}catch(e){}}
+function ivInfo(k){for(var i=0;i<IVS.length;i++)if(IVS[i][0]===k)return {k:k,l:IVS[i][1],base:IVS[i][2],g:IVS[i][3],m:IVS[i][4]};return null;}
+function bkt(s){return s>=2.5?1:s<=-2.5?-1:0;}
+function mtfCalc(D){
+  if(D.length<120)return null;
+  var r=analyze(D),V=r.V,n=D.length,cur=bkt(r.S.sc),N=0,u=0,j;
+  for(j=50;j<n-MH;j++){
+    if(V.sc[j]==null||bkt(V.sc[j])!==cur)continue;
+    N++; if(D[j+MH].c>D[j].c)u++;
+  }
+  var up=(u+1)/(N+2);
+  return {sc:r.S.sc,dir:r.S.dir,e:r.S.e,sl:r.S.sl,tp1:r.S.tp1,up:up,N:N};
+}
+function mtfRun(){
+  var tok=++mtfTok,x=sel.x;
+  MW.forEach(function(k){
+    var f=ivInfo(k); if(!f)return;
+    getJSON('/api/v3/klines?symbol='+x+'&interval='+f.base+'&limit='+(500*f.g)).then(function(a){
+      if(tok!==mtfTok)return;
+      var D=a.map(function(q){return {t:q[0],o:+q[1],h:+q[2],l:+q[3],c:+q[4],v:+q[5]};});
+      if(f.g>1)D=aggC(D,f.m);
+      mtf[k]=mtfCalc(D); mtfRender();
+    }).catch(function(){});
+  });
+  mtfRender();
+}
+function mtfBuild(){
+  $('#mtfChips').innerHTML=IVS.map(function(v){return '<button type="button" data-k="'+v[0]+'" aria-pressed="'+(MW.indexOf(v[0])>=0)+'">'+v[1]+'</button>';}).join('');
+  $('#mtfHint').textContent='Elige arriba los periodos que quieras vigilar. «Sube/Baja» es la frecuencia real con la que, en las últimas ~500 velas de este par y con una señal igual, el precio estaba más alto o más bajo '+MH+' velas después. Es orientativo, no una garantía. Pulsa una fila para abrir ese periodo en el gráfico.';
+}
+function mtfRender(){
+  $('#mtfPair').textContent=sel.s+'/USD';
+  var rows=IVS.filter(function(v){return MW.indexOf(v[0])>=0;}),b=0,v_=0,w=0,h='';
+  if(!rows.length){$('#mtfRows').innerHTML='<p class="empty">Activa al menos un periodo.</p>';$('#mtfSum').textContent='';return;}
+  rows.forEach(function(v){
+    var r=mtf[v[0]];
+    if(!r){h+='<div class="mrow" data-iv="'+v[0]+'"><span class="tf">'+v[1]+'</span><span class="l1"><small>'+(r===null?'Pocos datos':'Calculando…')+'</small></span></div>';return;}
+    if(r.dir>0)b++;else if(r.dir<0)v_++;else w++;
+    var up=Math.round(r.up*100),dn=100-up,
+      act=r.dir>0?'<span class="tag long">COMPRAR</span>':r.dir<0?'<span class="tag short">VENDER</span>':'<span class="tag">ESPERAR</span>',
+      det=r.dir?('<small>'+(r.dir>0?'Entrada ':'Entrada ')+nf(r.e,sel.dec)+' · Stop '+nf(r.sl,sel.dec)+' · TP '+nf(r.tp1,sel.dec)+'</small>'):'<small>Sin ventaja clara · puntuación '+(r.sc>=0?'+':'−')+nf(Math.abs(r.sc),1)+'</small>';
+    h+='<div class="mrow" data-iv="'+v[0]+'" title="Puntuación '+nf(r.sc,1)+' · muestra: '+r.N+' casos"><span class="tf">'+v[1]+'</span>'+
+      '<span class="l1">'+act+'<span><b class="up">Sube '+up+' %</b> · <b class="down">Baja '+dn+' %</b></span></span>'+
+      '<span class="pb"><i style="width:'+up+'%"></i></span>'+det+(r.N<20?' <small>(pocos casos: '+r.N+')</small>':'')+'</div>';
+  });
+  $('#mtfRows').innerHTML='<div style="display:grid;gap:6px">'+h+'</div>';
+  $('#mtfSum').innerHTML='Resumen: <b class="up">'+b+' comprar</b> · <b class="down">'+v_+' vender</b> · '+w+' esperar';
+}
+$('#mtfChips').addEventListener('click',function(e){
+  var bt=e.target.closest('button'); if(!bt)return; var k=bt.dataset.k,i=MW.indexOf(k);
+  if(i>=0)MW.splice(i,1);else MW.push(k);
+  bt.setAttribute('aria-pressed',String(i<0)); mtfSave(); mtfRun();
+});
+$('#mtfRows').addEventListener('click',function(e){
+  var r=e.target.closest('[data-iv]'); if(!r)return;
+  var t=document.querySelector('#tfs [data-iv="'+r.dataset.iv+'"]'); if(t)t.click();
+});
+$('#mtfTog').addEventListener('click',function(){
+  var bd=$('#mtfBody'),open=bd.hidden; bd.hidden=!open;
+  this.textContent=open?'−':'+'; this.setAttribute('aria-expanded',String(open));
+});
+
 /* ================= inicio ================= */
 buildInd(); buildTfs(); buildLevQuick(); setLev(form.lev); renderTabs();
 miniSock=Sock('/ws/!miniTicker@arr',onMini);
@@ -1209,6 +1304,7 @@ loadPair();
 requestAnimationFrame(frame);
 setInterval(function(){dirty=true;},1000);
 runScan(); setInterval(runScan,60000);
+mtfBuild(); mtfRun(); setInterval(mtfRun,60000);
 setInterval(function(){if(curTab==='sig'||curTab==='scan'){structDirty=true;dirty=true;}},2500);
 })();
 </script>
